@@ -1,0 +1,128 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>LMS Real-Time Notifications</title>
+</head>
+<body>
+  <h2>LMS Real-Time Notifications</h2>
+
+  <label for="token">JWT Token:</label>
+  <input id="token" type="password" placeholder="Paste your JWT token" />
+
+  <br /><br />
+
+  <label for="courseId">Course ID:</label>
+  <input id="courseId" type="number" min="1" placeholder="Example: 2" />
+
+  <br /><br />
+
+  <button id="connectBtn">Connect</button>
+  <button id="joinBtn" disabled>Join Course</button>
+  <button id="leaveBtn" disabled>Leave Course</button>
+
+  <h3>Status</h3>
+  <p id="status">Not connected</p>
+
+  <h3>Notifications and Events</h3>
+  <ul id="events"></ul>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    let socket;
+
+    const status = document.getElementById("status");
+    const events = document.getElementById("events");
+    const tokenInput = document.getElementById("token");
+    const courseInput = document.getElementById("courseId");
+    const connectBtn = document.getElementById("connectBtn");
+    const joinBtn = document.getElementById("joinBtn");
+    const leaveBtn = document.getElementById("leaveBtn");
+
+    function logEvent(message, data) {
+      const item = document.createElement("li");
+      item.textContent = message +
+        (data ? " " + JSON.stringify(data) : "");
+      events.prepend(item);
+    }
+
+    connectBtn.addEventListener("click", () => {
+      const token = tokenInput.value.trim();
+
+      if (!token) {
+        status.textContent = "Please enter a JWT token";
+        return;
+      }
+
+      if (socket) socket.disconnect();
+
+      socket = io({
+        auth: { token }
+      });
+
+      socket.on("connect", () => {
+        status.textContent = "Connected: " + socket.id;
+        logEvent("Socket connected");
+        joinBtn.disabled = false;
+        connectBtn.disabled = true;
+      });
+
+      socket.on("connect_error", (error) => {
+        status.textContent = "Connection failed: " + error.message;
+        logEvent("Connection error", { message: error.message });
+        joinBtn.disabled = true;
+        connectBtn.disabled = false;
+      });
+
+      socket.on("joinedCourse", (data) => {
+        logEvent("Joined course room", data);
+      });
+
+      socket.on("userJoined", (data) => {
+        logEvent("Another user joined", data);
+      });
+
+      socket.on("leftCourse", (data) => {
+        logEvent("Left course room", data);
+      });
+
+      socket.on("newAssignment", (data) => {
+        logEvent("New assignment received", data);
+      });
+
+      socket.on("errorMessage", (data) => {
+        logEvent("Socket message", data);
+      });
+
+      socket.on("disconnect", (reason) => {
+        status.textContent = "Disconnected: " + reason;
+        joinBtn.disabled = true;
+        leaveBtn.disabled = true;
+        connectBtn.disabled = false;
+      });
+    });
+
+    joinBtn.addEventListener("click", () => {
+      const courseId = courseInput.value.trim();
+
+      if (!courseId || Number(courseId) < 1) {
+        status.textContent = "Enter a valid course ID";
+        return;
+      }
+
+      socket.emit("joinCourse", courseId);
+      leaveBtn.disabled = false;
+    });
+
+    leaveBtn.addEventListener("click", () => {
+      const courseId = courseInput.value.trim();
+      if (socket && courseId) {
+        socket.emit("leaveCourse", courseId);
+        leaveBtn.disabled = true;
+      }
+    });
+  </script>
+</body>
+</html>

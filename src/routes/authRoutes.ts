@@ -1,143 +1,148 @@
 import { Router, Request, Response } from "express";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
-import passport from "../config/passport.js";
-import {
-  createUser,
-  findUserByEmail
-} from "../models/User.js";
-import { UserRole } from "../models/User.js";
+import { pool } from "../config/db.js";
 
 const router = Router();
 
-const JWT_SECRET = process.env.JWT_SECRET as string;
+router.post(
+  "/register",
+  async (req: Request, res: Response): Promise<void> => {
+    try {
+      const { name, email, password, role } = req.body;
 
-// POST /api/auth/register
-router.post("/register", async (req: Request, res: Response) => {
-  try {
-    const { name, email, password, role } = req.body as {
-      name: string;
-      email: string;
-      password: string;
-      role: UserRole;
-    };
-
-    if (!name || !email || !password || !role) {
-      return res.status(400).json({
-        success: false,
-        message: "Name, email, password and role are required"
-      });
-    }
-
-    if (!["student", "instructor", "admin"].includes(role)) {
-      return res.status(400).json({
-        success: false,
-        message: "Invalid role"
-      });
-    }
-
-    const existingUser = await findUserByEmail(email);
-
-    if (existingUser) {
-      return res.status(409).json({
-        success: false,
-        message: "Email already registered"
-      });
-    }
-
-    const hashedPassword = await bcrypt.hash(password, 10);
-
-    const user = await createUser({
-      name,
-      email,
-      password: hashedPassword,
-      role
-    });
-
-    return res.status(201).json({
-      success: true,
-      message: "User registered successfully",
-      data: {
-        id: user.id,
-        name: user.name,
-        email: user.email,
-        role: user.role
-      }
-    });
-  } catch (error) {
-    console.error("Registration error:", error);
-
-    return res.status(500).json({
-      success: false,
-      message: "Internal server error"
-    });
-  }
-});
-
-// POST /api/auth/login
-router.post("/login", (req: Request, res: Response, next) => {
-  passport.authenticate(
-    "local",
-    { session: true },
-    (error: Error | null, user: Express.User | false, info?: { message?: string }) => {
-      if (error) {
-        return next(error);
-      }
-
-      if (!user) {
-        return res.status(401).json({
+      if (!name || !email || !password) {
+        res.status(400).json({
           success: false,
-          message: info?.message || "Invalid email or password"
+          message: "Name, email and password are required",
         });
+        return;
       }
 
-      const authenticatedUser = user as {
+      const [existingUsers] = await pool.execute(
+        "SELECT id FROM users WHERE email = ?",
+        [email],
+      );
+
+      if ((existingUsers as unknown[]).length > 0) {
+        res.status(409).json({
+          success: false,
+          message: "Email already registered",
+        });
+        return;
+      }
+
+      const hashedPassword = await bcrypt.hash(password, 10);
+      const allowedRoles = ["student", "instructor", "admin"];
+      const userRole = allowedRoles.includes(role) ? role : "student";
+
+      await pool.execute(
+        "INSERT INTO users (name, email, password, role) VALUES (?, ?, ?, ?)",
+        [name, email, hashedPassword, userRole],
+      );
+
+      res.status(201).json({
+        success: true,
+        message: "User registered successfully",
+      });
+    } catch (error) {
+      console.error("Registration error:", error);
+      res.status(500).json({
+        success: false,
+        message: "Registration failed",
+      });
+    }
+  },
+);
+
+router.post(
+  "/login",
+  async (req: Request, res: Response): Promise<void> => {
+    try {
+      const { email, password } = req.body;
+
+      if (!email || !password) {
+        res.status(400).json({
+          success: false,
+          message: "Email and password are required",
+        });
+        return;
+      }
+
+      const [rows] = await pool.execute(
+        "SELECT id, name, email, password, role FROM users WHERE email = ?",
+        [email],
+      );
+
+      const users = rows as {
         id: number;
         name: string;
         email: string;
-        role: UserRole;
-      };
+        password: string;
+        role: "student" | "instructor" | "admin";
+      }[];
 
-      if (!JWT_SECRET) {
-        return res.status(500).json({
+      if (users.length === 0) {
+        res.status(401).json({
           success: false,
-          message: "JWT_SECRET is not configured"
+          message: "Invalid email or password",
         });
+        return;
+      }
+
+      const user = users[0];
+      const passwordMatches = await bcrypt.compare(
+        password,
+        user.password,
+      );
+
+      if (!passwordMatches) {
+        res.status(401).json({
+          success: false,
+          message: "Invalid email or password",
+        });
+        return;
+      }
+
+      const secret = process.env.JWT_SECRET;
+
+      if (!secret) {
+        res.status(500).json({
+          success: false,
+          message: "JWT_SECRET is not configured",
+        });
+        return;
       }
 
       const token = jwt.sign(
         {
-          id: authenticatedUser.id,
-          email: authenticatedUser.email,
-          role: authenticatedUser.role
+          id: user.id,
+          email: user.email,
+          role: user.role,
         },
-        JWT_SECRET,
-        {
-          expiresIn: "1h"
-        }
+        secret,
+        { expiresIn: "1h" },
       );
 
-      req.logIn(user, (loginError) => {
-        if (loginError) {
-          return next(loginError);
-        }
-
-        return res.status(200).json({
-          success: true,
-          message: "Login successful",
-          data: {
-            token,
-            user: {
-              id: authenticatedUser.id,
-              name: authenticatedUser.name,
-              email: authenticatedUser.email,
-              role: authenticatedUser.role
-            }
-          }
-        });
+      res.status(200).json({
+        success: true,
+        message: "Login successful",
+        token,
+        user: {
+          id: user.id,
+          name: user.name,
+          email: user.email,
+          role: user.role,
+        },
+      });
+    } catch (error) {
+      console.error("Login error:", error);
+      res.status(500).json({
+        success: false,
+        message: "Login failed",
       });
     }
-  )(req, res, next);
-});
+  },
+);
 
 export default router;
